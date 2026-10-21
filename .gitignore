@@ -1,0 +1,6 @@
+.build/
+build/
+web/
+vendor/
+.DS_Store
+design/out/
