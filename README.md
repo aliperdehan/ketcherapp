@@ -11,9 +11,18 @@ What the shell adds over a browser tab:
   policy that blocks every other origin; links open in the default browser;
 - *Save as* and *Open* use the normal macOS save and open panels.
 
-## Install
+## Download
 
-There is no binary release yet: you build it, which takes a few minutes the first time.
+Grab `ketcherapp-X.Y.Z-macos-arm64.zip` from the [Releases](https://github.com/aliperdehan/ketcherapp/releases)
+page, unzip it and drag `Ketcher.app` to `/Applications`. Apple Silicon only (an Intel Mac has to build it, below).
+
+The app is ad-hoc signed, not notarized, so macOS blocks the first launch of a downloaded copy. Open it once anyway:
+try to open it, then System Settings → Privacy & Security → scroll down → **Open Anyway**. Or, in Terminal, once:
+`xattr -dr com.apple.quarantine /Applications/Ketcher.app`.
+
+## Build and install
+
+You can also build it yourself, which takes a few minutes the first time.
 
 Needs the Command Line Tools (`xcode-select --install`, no Xcode), git, and Node ≥ 24.14 (only for the web bundle).
 
@@ -23,9 +32,8 @@ Needs the Command Line Tools (`xcode-select --install`, no Xcode), git, and Node
 ```
 
 `./build.sh` alone only makes `build/Ketcher.app`; drag it to `/Applications` yourself if you prefer that folder.
+A copy you built yourself is not quarantined and opens normally.
 
-- **Gatekeeper:** the app is ad-hoc signed, not notarized. A copy you built yourself opens normally. A copy that
-  arrives as a downloaded zip is quarantined: right-click, Open, once (or `xattr -dr com.apple.quarantine Ketcher.app`).
 - **Architecture:** the app is built for the Mac that builds it (Apple Silicon or Intel).
 - **Update:** `git pull`, then `./build.sh --install`. Ketcher itself is pinned by `KETCHER_TAG` in `build-web.sh`;
   `CLAUDE.md` says how to move it.
