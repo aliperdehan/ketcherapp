@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-let appVersion = "0.1.0"
+let appVersion = "0.1.1"
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let host: WebHost

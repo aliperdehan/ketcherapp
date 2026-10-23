@@ -3,7 +3,7 @@ import WebKit
 
 /// Owns the WKWebView and answers the questions a browser would normally answer: where a download goes, what the
 /// file picker shows, whether a link may leave the app.
-final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandlerWithReply {
     let webView: WKWebView
     weak var window: NSWindow?
 
@@ -19,12 +19,46 @@ final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         document.documentElement.appendChild(s);
         """
 
+    // Ketcher copies and pastes through navigator.clipboard, and WebKit refuses it (NotAllowedError) once the user
+    // gesture is gone: a menu ⌘C reaches Ketcher's copy handler, which awaits Indigo before writing, so nothing lands
+    // on the pasteboard and ⌘V has nothing to read. This replaces it with a bridge to NSPasteboard. Ketcher only
+    // uses text/plain (MOL or KET text) and image/png (Copy Image).
+    private static let clipboardShim = """
+        (() => {
+          const post = (message) => window.webkit.messageHandlers.clipboard.postMessage(message);
+          const base64 = (blob) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+          const readText = async () => (await post({ read: true })).text;
+          const clipboard = {
+            writeText: async (text) => { await post({ text: String(text) }); },
+            write: async (items) => {
+              const message = {};
+              for (const type of items[0].types) {
+                const blob = await items[0].getType(type);
+                if (type === 'text/plain') message.text = await blob.text();
+                else if (type === 'image/png') message.png = await base64(blob);
+              }
+              await post(message);
+            },
+            readText,
+            read: async () => [new ClipboardItem({ 'text/plain': new Blob([await readText()], { type: 'text/plain' }) })],
+          };
+          Object.defineProperty(navigator, 'clipboard', { value: clipboard, configurable: true });
+        })();
+        """
+
     init(resources: URL) {
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BundleSchemeHandler(root: resources.appendingPathComponent("web")),
                                    forURLScheme: BundleSchemeHandler.scheme)
         config.userContentController.addUserScript(WKUserScript(
             source: Self.noOverscroll, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.clipboardShim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = false
@@ -34,6 +68,7 @@ final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        webView.configuration.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "clipboard")
     }
 
     func load() { webView.load(URLRequest(url: BundleSchemeHandler.entry)) }
@@ -110,6 +145,20 @@ final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         let alert = NSAlert(error: error)
         alert.messageText = "Could not save the file"
         alert.runModal()
+    }
+
+    // MARK: clipboard bridge
+
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard message.frameInfo.securityOrigin.protocol == BundleSchemeHandler.scheme,
+              let body = message.body as? [String: Any] else { return replyHandler(nil, "not allowed") }
+        let pasteboard = NSPasteboard.general
+        if body["read"] != nil { return replyHandler(["text": pasteboard.string(forType: .string) ?? ""], nil) }
+        pasteboard.clearContents()
+        if let text = body["text"] as? String { pasteboard.setString(text, forType: .string) }
+        if let png = (body["png"] as? String).flatMap({ Data(base64Encoded: $0) }) { pasteboard.setData(png, forType: .png) }
+        replyHandler(nil, nil)
     }
 
     // MARK: file picker and JavaScript dialogs

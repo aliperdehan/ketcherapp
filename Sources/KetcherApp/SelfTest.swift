@@ -9,6 +9,7 @@ final class SelfTest {
         .appendingPathComponent("ketcherapp-selftest-\(getpid())")
     private var script: [String: Any]?
     private var saved: URL??
+    private var clipboardOK: Bool?
     private var finished = false
 
     init(host: WebHost) { self.host = host }
@@ -54,13 +55,43 @@ final class SelfTest {
             case .failure(let error): self?.fail("script: \(error)")
             case .success(let value):
                 self?.script = value as? [String: Any]
-                self?.checkDone()
+                self?.checkClipboard()
+            }
+        }
+    }
+
+    /// What ⌘C/⌘V do: the native copy: and paste: the Edit menu sends. Ketcher's copy handler writes after an await,
+    /// where WebKit has dropped the user gesture, so this only passes while the clipboard goes through the bridge.
+    /// The clipboard text is put back afterwards.
+    private func checkClipboard() {
+        let web = host.webView
+        let pasteboard = NSPasteboard.general
+        let previous = pasteboard.string(forType: .string)
+        let prepare = "await window.ketcher.setMolecule('CCO'); window.ketcher.editor.selection('all'); return 1"
+        web.callAsyncJavaScript(prepare, arguments: [:], in: nil, in: .page) { [weak self] _ in
+            pasteboard.clearContents()
+            web.perform(#selector(NSText.copy(_:)), with: nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                let copied = pasteboard.string(forType: .string)?.contains("-INDIGO-") == true
+                web.evaluateJavaScript("window.ketcher.editor.selection(null); 1") { _, _ in
+                    web.perform(#selector(NSText.paste(_:)), with: nil)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        web.callAsyncJavaScript("return await window.ketcher.getSmiles()", arguments: [:], in: nil,
+                                                in: .page) { result in
+                            pasteboard.clearContents()
+                            if let previous { pasteboard.setString(previous, forType: .string) }
+                            let smiles = try? result.get() as? String
+                            self?.clipboardOK = copied && smiles == "CCO.CCO"
+                            self?.checkDone()
+                        }
+                    }
+                }
             }
         }
     }
 
     private func checkDone() {
-        guard let script, let saved else { return }
+        guard let script, let saved, let clipboardOK else { return }
         finished = true
         var failed = false
         func check(_ ok: Bool, _ pass: String, _ fail: String) {
@@ -73,6 +104,7 @@ final class SelfTest {
         check(external == "blocked", "external fetch is blocked", "external fetch was \(external ?? "nil")")
         let text = saved.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         check(text == "hello ketcher", "blob download saved selftest.txt", "blob download gave \(text ?? "no file")")
+        check(clipboardOK, "Edit-menu copy and paste round-trip a structure", "Edit-menu copy and paste did nothing")
         let web = host.webView
         check(!web.allowsBackForwardNavigationGestures && !web.allowsMagnification,
               "swipe-back and pinch-zoom are off", "a browser gesture is on")

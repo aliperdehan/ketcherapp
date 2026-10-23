@@ -15,7 +15,8 @@ README lists the features; this file is only process.
 
 - Test headless first: `./build.sh && build/Ketcher.app/Contents/MacOS/KetcherApp --selftest`. It loads Ketcher in a
   window that is never shown and checks the bundle loads, Indigo's WASM parses a molecule, an external `fetch` is
-  blocked, and a blob download reaches disk.
+  blocked, a blob download reaches disk, and the Edit menu's native copy/paste round-trips a structure (it briefly
+  uses the clipboard and puts the text back).
 - **Do not launch the window while the author may be typing** (a launched app takes the keyboard focus).
   `--selftest` does not take focus; `open build/Ketcher.app` does.
 - Keystrokes and gestures cannot be sent from here: the menu shortcuts (⌘C/⌘V, ⌘A and ⌘Z reaching Ketcher), the
