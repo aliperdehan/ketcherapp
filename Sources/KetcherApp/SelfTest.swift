@@ -2,7 +2,7 @@ import AppKit
 import WebKit
 
 /// `KetcherApp --selftest`: loads the bundled Ketcher in a window that is never shown and checks what the wrapper
-/// is responsible for (bundle served, Indigo WASM runs, network cut, blob download reaches disk). Exit 0 = all pass.
+/// is responsible for (bundle served, Indigo WASM runs, network cut, Ketcher's saveAs writes a named file). Exit 0 = all pass.
 final class SelfTest {
     private let host: WebHost
     private let dir = FileManager.default.temporaryDirectory
@@ -43,12 +43,10 @@ final class SelfTest {
             const smiles = await window.ketcher.getSmiles();
             let external = 'reached';
             try { await fetch('https://example.com/', { mode: 'no-cors' }); } catch (e) { external = 'blocked'; }
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(new Blob(['hello ketcher'], { type: 'text/plain' }));
-            a.download = 'selftest.txt';
-            document.body.appendChild(a);
-            a.click();
-            return { smiles, external };
+            // FileSaver.js's saveAs, the call behind Ketcher's Save button.
+            if (typeof window.saveAs !== 'function') return { smiles, external, saveAs: 'missing' };
+            window.saveAs(new Blob(['hello ketcher'], { type: 'chemical/x-mdl-molfile' }), 'selftest.mol');
+            return { smiles, external, saveAs: 'called' };
             """
         host.webView.callAsyncJavaScript(body, arguments: [:], in: nil, in: .page) { [weak self] result in
             switch result {
@@ -103,7 +101,10 @@ final class SelfTest {
         let external = script["external"] as? String
         check(external == "blocked", "external fetch is blocked", "external fetch was \(external ?? "nil")")
         let text = saved.flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-        check(text == "hello ketcher", "blob download saved selftest.txt", "blob download gave \(text ?? "no file")")
+        let name = saved?.lastPathComponent
+        check(script["saveAs"] as? String == "called" && name == "selftest.mol" && text == "hello ketcher",
+              "Ketcher's saveAs saved selftest.mol without a panel",
+              "saveAs \(script["saveAs"] ?? "nil") gave \(name ?? "no file") with \(text ?? "no text")")
         check(clipboardOK, "Edit-menu copy and paste round-trip a structure", "Edit-menu copy and paste did nothing")
         let web = host.webView
         check(!web.allowsBackForwardNavigationGestures && !web.allowsMagnification,

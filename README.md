@@ -9,7 +9,8 @@ What the shell adds over a browser tab:
 - no swipe-back/forward, no pinch-zoom of the page, no rubber-band scrolling;
 - nothing leaves the machine: the page is served from the app bundle under `ketcher://app/` with a content security
   policy that blocks every other origin; links open in the default browser;
-- *Save as* and *Open* use the normal macOS save and open panels.
+- *Save as* writes straight into one folder, with the name and format from Ketcher's Save dialog (no second
+  panel). The first save asks for the folder; *File ▸ Save Folder…* changes it. *Open* uses the macOS open panel.
 
 ## Download
 

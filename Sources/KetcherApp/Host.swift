@@ -51,6 +51,22 @@ final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         })();
         """
 
+    // Ketcher saves through FileSaver.js, which takes a user agent without "Safari" for a macOS WebView and then
+    // navigates the page to a nameless data: URL: the download came out as "Unknown" and failed. Adding "Safari" to
+    // the user agent fixes that but sends Ketcher's copy/paste down another path that breaks ⌘C. FileSaver uses an
+    // existing window.saveAs instead of its own, so this one does what it does in Safari: a named <a download>.
+    // The blob URL is kept for 10 minutes, long past any save panel.
+    private static let saveAsShim = """
+        window.saveAs = (blob, name) => {
+          const a = document.createElement('a');
+          a.href = typeof blob === 'string' ? blob : URL.createObjectURL(blob);
+          a.download = name || (blob && blob.name) || 'ketcher';
+          a.rel = 'noopener';
+          a.click();
+          if (typeof blob !== 'string') setTimeout(() => URL.revokeObjectURL(a.href), 600000);
+        };
+        """
+
     init(resources: URL) {
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(BundleSchemeHandler(root: resources.appendingPathComponent("web")),
@@ -59,6 +75,8 @@ final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
             source: Self.noOverscroll, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         config.userContentController.addUserScript(WKUserScript(
             source: Self.clipboardShim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        config.userContentController.addUserScript(WKUserScript(
+            source: Self.saveAsShim, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         webView = WKWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsMagnification = false
@@ -112,39 +130,85 @@ final class WebHost: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDel
         return nil
     }
 
-    // MARK: downloads (Ketcher's "Save as" is a blob download)
+    // MARK: downloads (Ketcher's Save dialog is a blob download)
 
-    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
-                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
-        let key = ObjectIdentifier(download)
-        if let dir = autoDownloadDir {
-            let target = dir.appendingPathComponent(suggestedFilename)
-            try? FileManager.default.removeItem(at: target)
-            downloadTargets[key] = target
-            return completionHandler(target)
-        }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = suggestedFilename
+    private static let saveFolderKey = "SaveFolder"
+
+    /// The folder saves go into, once chosen; nil until then, or when it has gone (an unplugged drive).
+    private var saveFolder: URL? {
+        guard let path = UserDefaults.standard.string(forKey: Self.saveFolderKey) else { return nil }
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: path, isDirectory: &isDir) && isDir.boolValue
+            ? URL(fileURLWithPath: path, isDirectory: true) : nil
+    }
+
+    /// File ▸ Save Folder…, and the first save: a folder panel; `done` gets the chosen folder, nil on Cancel.
+    func chooseSaveFolder(firstTime: Bool = false, done: ((URL?) -> Void)? = nil) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
         panel.canCreateDirectories = true
-        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] result in
-            guard result == .OK, let url = panel.url else { return completionHandler(nil) }
-            try? FileManager.default.removeItem(at: url)   // the panel already confirmed the overwrite
-            self?.downloadTargets[key] = url
-            completionHandler(url)
+        panel.prompt = "Choose"
+        panel.message = firstTime
+            ? "Choose the folder Ketcher saves into. It is remembered; change it with File ▸ Save Folder…"
+            : "Choose the folder Ketcher saves into."
+        panel.directoryURL = saveFolder ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        let finish: (NSApplication.ModalResponse) -> Void = { result in
+            guard result == .OK, let url = panel.url else { return done?(nil) ?? () }
+            UserDefaults.standard.set(url.path, forKey: Self.saveFolderKey)
+            done?(url)
         }
         if let window { panel.beginSheetModal(for: window, completionHandler: finish) } else { finish(panel.runModal()) }
     }
 
+    @objc func chooseSaveFolder(_ sender: Any?) { chooseSaveFolder() }
+
+    /// Ketcher's own Save dialog already asks for the name and format, so there is no second panel: the file goes
+    /// into the remembered folder (asked for once), with " 2", " 3"… added instead of overwriting an existing file.
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse,
+                  suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        if let dir = autoDownloadDir ?? saveFolder {
+            return save(download, suggestedFilename, in: dir, completionHandler)
+        }
+        chooseSaveFolder(firstTime: true) { [weak self] dir in
+            guard let self, let dir else { return completionHandler(nil) }
+            self.save(download, suggestedFilename, in: dir, completionHandler)
+        }
+    }
+
+    private func save(_ download: WKDownload, _ suggestedFilename: String, in dir: URL,
+                      _ completionHandler: @escaping (URL?) -> Void) {
+        let fm = FileManager.default
+        let name = suggestedFilename.isEmpty ? "ketcher" : suggestedFilename
+        let stem = (name as NSString).deletingPathExtension, ext = (name as NSString).pathExtension
+        var target = dir.appendingPathComponent(name)
+        var n = 2
+        while fm.fileExists(atPath: target.path) {
+            target = dir.appendingPathComponent(ext.isEmpty ? "\(stem) \(n)" : "\(stem) \(n).\(ext)")
+            n += 1
+        }
+        downloadTargets[ObjectIdentifier(download)] = target
+        completionHandler(target)
+    }
+
     func downloadDidFinish(_ download: WKDownload) {
-        onDownload?(downloadTargets.removeValue(forKey: ObjectIdentifier(download)))
+        let target = downloadTargets.removeValue(forKey: ObjectIdentifier(download))
+        if let onDownload { return onDownload(target) }
+        // Bounces the Downloads stack in the Dock, as Safari does when a download finishes.
+        if let target {
+            DistributedNotificationCenter.default().post(name: .init("com.apple.DownloadFileFinished"),
+                                                         object: target.resolvingSymlinksInPath().path)
+        }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        downloadTargets[ObjectIdentifier(download)] = nil
+        let target = downloadTargets.removeValue(forKey: ObjectIdentifier(download))
         if let onDownload { return onDownload(nil) }
-        let alert = NSAlert(error: error)
-        alert.messageText = "Could not save the file"
-        alert.runModal()
+        if (error as NSError).code == NSURLErrorCancelled { return }   // Cancel in the first-save folder panel
+        let alert = NSAlert()
+        alert.messageText = "Could not save \(target?.lastPathComponent ?? "the file")"
+        alert.informativeText = error.localizedDescription
+        if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
     }
 
     // MARK: clipboard bridge

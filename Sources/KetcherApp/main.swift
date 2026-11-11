@@ -1,7 +1,7 @@
 import AppKit
 import WebKit
 
-let appVersion = "0.1.1"
+let appVersion = "0.1.2"
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let host: WebHost
@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             runner?.run()
             return
         }
-        NSApp.mainMenu = Self.makeMenu()
+        NSApp.mainMenu = Self.makeMenu(host: host)
         if !window.setFrameUsingName("main") { window.center() }
         window.setFrameAutosaveName("main")
         window.makeKeyAndOrderFront(nil)
@@ -41,7 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // The Edit items are needed: WKWebView only gets ⌘X/⌘C/⌘V through the menu. Select All and Undo/Redo are left
     // out on purpose, so ⌘A and ⌘Z reach Ketcher's own key handling instead of selecting page text.
-    static func makeMenu() -> NSMenu {
+    static func makeMenu(host: WebHost) -> NSMenu {
         let main = NSMenu()
         func add(_ menu: NSMenu, to title: String) {
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
@@ -60,6 +60,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         app.addItem(.separator())
         app.addItem(withTitle: "Quit Ketcher", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         add(app, to: "Ketcher")
+
+        // Ketcher's Save dialog has a name and a format but no folder; saves go into this one.
+        let file = NSMenu(title: "File")
+        file.addItem(withTitle: "Save Folder…", action: #selector(WebHost.chooseSaveFolder(_:)), keyEquivalent: "")
+            .target = host
+        add(file, to: "File")
 
         let edit = NSMenu(title: "Edit")
         edit.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
